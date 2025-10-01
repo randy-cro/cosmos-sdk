@@ -149,7 +149,13 @@ func (k *Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpd
 // at the previous block height or were removed from the validator set entirely
 // are returned to CometBFT.
 func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates []abci.ValidatorUpdate, err error) {
+	startTime := time.Now()
+	logger := k.Logger(ctx)
 
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Starting validator set updates")
+
+	// Get params and setup
+	paramsStart := time.Now()
 	params, err := k.GetParams(ctx)
 	if err != nil {
 		return nil, err
@@ -158,22 +164,34 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 	powerReduction := k.PowerReduction(ctx)
 	totalPower := math.ZeroInt()
 	amtFromBondedToNotBonded, amtFromNotBondedToBonded := math.ZeroInt(), math.ZeroInt()
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Params setup", "duration", time.Since(paramsStart))
 
 	// Retrieve the last validator set.
 	// The persistent set is updated later in this function.
 	// (see LastValidatorPowerKey).
+	lastValidatorsStart := time.Now()
 	last, err := k.getLastValidatorsByAddr(ctx)
 	if err != nil {
 		return nil, err
 	}
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Retrieved last validators", "duration", time.Since(lastValidatorsStart), "count", len(last))
 
+	// Create iterator
+	iteratorStart := time.Now()
 	iterator, err := k.ValidatorsPowerStoreIterator(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer iterator.Close()
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Created power store iterator", "duration", time.Since(iteratorStart))
 
+	// Process validators in power order
+	validatorLoopStart := time.Now()
+	validatorCount := 0
 	for count := 0; iterator.Valid() && count < int(maxValidators); iterator.Next() {
+		validatorCount++
+		validatorStart := time.Now()
+
 		// everything that is iterated in this loop is becoming or already a
 		// part of the bonded validator set
 		valAddr := sdk.ValAddress(iterator.Value())
@@ -190,6 +208,7 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 		}
 
 		// apply the appropriate state change if necessary
+		stateTransitionStart := time.Now()
 		switch {
 		case validator.IsUnbonded():
 			validator, err = k.unbondedToBonded(ctx, validator)
@@ -208,6 +227,7 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 		default:
 			panic("unexpected validator status")
 		}
+		stateTransitionDuration := time.Since(stateTransitionStart)
 
 		valAddrStr := string(valAddr)
 		// fetch the old power bytes
@@ -215,6 +235,7 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 		newPower := validator.ConsensusPower(powerReduction)
 
 		// update the validator set if power has changed
+		powerUpdateStart := time.Now()
 		if !found || oldPower != newPower {
 			updates = append(updates, validator.ABCIValidatorUpdate(powerReduction))
 
@@ -222,18 +243,40 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 				return nil, err
 			}
 		}
+		powerUpdateDuration := time.Since(powerUpdateStart)
 
 		delete(last, valAddrStr)
 		count++
 
 		totalPower = totalPower.AddRaw(newPower)
+
+		validatorDuration := time.Since(validatorStart)
+		if validatorDuration > 10*time.Millisecond || stateTransitionDuration > 5*time.Millisecond || powerUpdateDuration > 5*time.Millisecond {
+			logger.Info("ApplyAndReturnValidatorSetUpdates: Slow validator processing",
+				"validator", validatorCount,
+				"total_duration", validatorDuration,
+				"state_transition_duration", stateTransitionDuration,
+				"power_update_duration", powerUpdateDuration,
+				"power_changed", !found || oldPower != newPower)
+		}
 	}
 
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Completed validator loop",
+		"duration", time.Since(validatorLoopStart),
+		"validator_count", validatorCount,
+		"updates_count", len(updates))
+
+	// Process no longer bonded validators
+	noLongerBondedStart := time.Now()
 	noLongerBonded, err := sortNoLongerBonded(last, k.validatorAddressCodec)
 	if err != nil {
 		return nil, err
 	}
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Sorted no longer bonded validators",
+		"duration", time.Since(noLongerBondedStart),
+		"count", len(noLongerBonded))
 
+	unbondingStart := time.Now()
 	for _, valAddrBytes := range noLongerBonded {
 		validator := k.mustGetValidator(ctx, sdk.ValAddress(valAddrBytes))
 		validator, err = k.bondedToUnbonding(ctx, validator)
@@ -251,12 +294,16 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 
 		updates = append(updates, validator.ABCIValidatorUpdateZero())
 	}
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Processed no longer bonded validators",
+		"duration", time.Since(unbondingStart),
+		"count", len(noLongerBonded))
 
 	// Update the pools based on the recent updates in the validator set:
 	// - The tokens from the non-bonded candidates that enter the new validator set need to be transferred
 	// to the Bonded pool.
 	// - The tokens from the bonded validators that are being kicked out from the validator set
 	// need to be transferred to the NotBonded pool.
+	poolUpdateStart := time.Now()
 	switch {
 	// Compare and subtract the respective amounts to only perform one transfer.
 	// This is done in order to avoid doing multiple updates inside each iterator/loop.
@@ -270,8 +317,13 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 		}
 	default: // equal amounts of tokens; no update required
 	}
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Updated token pools",
+		"duration", time.Since(poolUpdateStart),
+		"amtFromNotBondedToBonded", amtFromNotBondedToBonded.String(),
+		"amtFromBondedToNotBonded", amtFromBondedToNotBonded.String())
 
 	// set total power on lookup index if there are any updates
+	finalUpdatesStart := time.Now()
 	if len(updates) > 0 {
 		if err = k.SetLastTotalPower(ctx, totalPower); err != nil {
 			return nil, err
@@ -282,6 +334,14 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 	if err = k.SetValidatorUpdates(ctx, updates); err != nil {
 		return nil, err
 	}
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Set final updates",
+		"duration", time.Since(finalUpdatesStart))
+
+	totalDuration := time.Since(startTime)
+	logger.Info("ApplyAndReturnValidatorSetUpdates: Completed",
+		"total_duration", totalDuration,
+		"total_updates", len(updates),
+		"total_power", totalPower.String())
 
 	return updates, err
 }
