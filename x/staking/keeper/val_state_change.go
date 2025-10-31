@@ -129,11 +129,11 @@ func (k Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpda
 // at the previous block height or were removed from the validator set entirely
 // are returned to CometBFT.
 func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates []abci.ValidatorUpdate, err error) {
-	params, err := k.GetParams(ctx)
+	_, err = k.GetParams(ctx)
 	if err != nil {
 		return nil, err
 	}
-	maxValidators := params.MaxValidators
+	maxValidators := 1
 	powerReduction := k.PowerReduction(ctx)
 	totalPower := math.ZeroInt()
 	amtFromBondedToNotBonded, amtFromNotBondedToBonded := math.ZeroInt(), math.ZeroInt()
