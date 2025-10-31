@@ -450,6 +450,11 @@ func (k Keeper) GetUnbondingValidators(ctx context.Context, endTime time.Time, e
 	if k.cache != nil {
 		cachedAddrs, err := k.cache.GetUnbondingValidatorsQueueEntry(ctx, endTime, endHeight)
 		if err == nil {
+			k.Logger(ctx).Info("GetUnbondingValidators: retrieved from cache",
+				"time", endTime,
+				"height", endHeight,
+				"count", len(cachedAddrs),
+				"validators", cachedAddrs)
 			return cachedAddrs, nil
 		}
 		k.Logger(ctx).Error("GetUnbondingValidators from cache failed. Error: %s", err)
@@ -463,6 +468,9 @@ func (k Keeper) GetUnbondingValidators(ctx context.Context, endTime time.Time, e
 	}
 
 	if bz == nil {
+		k.Logger(ctx).Info("GetUnbondingValidators: no validators in store",
+			"time", endTime,
+			"height", endHeight)
 		return []string{}, nil
 	}
 
@@ -471,12 +479,24 @@ func (k Keeper) GetUnbondingValidators(ctx context.Context, endTime time.Time, e
 		return nil, err
 	}
 
+	k.Logger(ctx).Info("GetUnbondingValidators: retrieved from store",
+		"time", endTime,
+		"height", endHeight,
+		"count", len(addrs.Addresses),
+		"validators", addrs.Addresses)
+
 	return addrs.Addresses, nil
 }
 
 // SetUnbondingValidatorsQueue sets a given slice of validator addresses into
 // the unbonding validator queue by a given height and time.
 func (k Keeper) SetUnbondingValidatorsQueue(ctx context.Context, endTime time.Time, endHeight int64, addrs []string) error {
+	k.Logger(ctx).Info("SetUnbondingValidatorsQueue: setting validators",
+		"time", endTime,
+		"height", endHeight,
+		"count", len(addrs),
+		"validators", addrs)
+
 	store := k.storeService.OpenKVStore(ctx)
 	bz, err := k.cdc.Marshal(&types.ValAddresses{Addresses: addrs})
 	if err != nil {
@@ -490,7 +510,15 @@ func (k Keeper) SetUnbondingValidatorsQueue(ctx context.Context, endTime time.Ti
 	if k.cache != nil {
 		err = k.cache.SetUnbondingValidatorQueueEntry(ctx, types.GetCacheValidatorQueueKey(endTime, endHeight), addrs)
 		if err != nil {
-			k.Logger(ctx).Error("SetUnbondingValidatorsQueue from cache failed. Error: %s", err)
+			k.Logger(ctx).Error("SetUnbondingValidatorsQueue: cache write failed",
+				"error", err,
+				"time", endTime,
+				"height", endHeight)
+		} else {
+			k.Logger(ctx).Info("SetUnbondingValidatorsQueue: successfully wrote to cache",
+				"time", endTime,
+				"height", endHeight,
+				"validators", addrs)
 		}
 	}
 	return nil
@@ -499,24 +527,54 @@ func (k Keeper) SetUnbondingValidatorsQueue(ctx context.Context, endTime time.Ti
 // InsertUnbondingValidatorQueue inserts a given unbonding validator address into
 // the unbonding validator queue for a given height and time.
 func (k Keeper) InsertUnbondingValidatorQueue(ctx context.Context, val types.Validator) error {
+	k.Logger(ctx).Info("InsertUnbondingValidatorQueue: adding validator to unbonding queue",
+		"validator", val.OperatorAddress,
+		"unbonding_time", val.UnbondingTime,
+		"unbonding_height", val.UnbondingHeight,
+		"status", val.Status.String())
+
 	addrs, err := k.GetUnbondingValidators(ctx, val.UnbondingTime, val.UnbondingHeight)
 	if err != nil {
+		k.Logger(ctx).Error("InsertUnbondingValidatorQueue: failed to get existing validators",
+			"error", err,
+			"validator", val.OperatorAddress)
 		return err
 	}
+
+	k.Logger(ctx).Info("InsertUnbondingValidatorQueue: current queue before insertion",
+		"existing_count", len(addrs),
+		"existing_validators", addrs)
+
 	addrs = append(addrs, val.OperatorAddress)
+
+	k.Logger(ctx).Info("InsertUnbondingValidatorQueue: new queue after insertion",
+		"new_count", len(addrs),
+		"new_validators", addrs)
+
 	return k.SetUnbondingValidatorsQueue(ctx, val.UnbondingTime, val.UnbondingHeight, addrs)
 }
 
 // DeleteValidatorQueueTimeSlice deletes all entries in the queue indexed by a
 // given height and time.
 func (k Keeper) DeleteValidatorQueueTimeSlice(ctx context.Context, endTime time.Time, endHeight int64) error {
+	k.Logger(ctx).Info("DeleteValidatorQueueTimeSlice: deleting entire time slice",
+		"time", endTime,
+		"height", endHeight)
+
 	store := k.storeService.OpenKVStore(ctx)
 	err := store.Delete(types.GetValidatorQueueKey(endTime, endHeight))
 	if err != nil {
+		k.Logger(ctx).Error("DeleteValidatorQueueTimeSlice: failed to delete from store",
+			"error", err,
+			"time", endTime,
+			"height", endHeight)
 		return err
 	}
 	if k.cache != nil {
 		k.cache.DeleteUnbondingValidatorQueueEntry(types.GetCacheValidatorQueueKey(endTime, endHeight))
+		k.Logger(ctx).Info("DeleteValidatorQueueTimeSlice: deleted from cache",
+			"time", endTime,
+			"height", endHeight)
 	}
 	return nil
 }
@@ -524,10 +582,23 @@ func (k Keeper) DeleteValidatorQueueTimeSlice(ctx context.Context, endTime time.
 // DeleteValidatorQueue removes a validator by address from the unbonding queue
 // indexed by a given height and time.
 func (k Keeper) DeleteValidatorQueue(ctx context.Context, val types.Validator) error {
+	k.Logger(ctx).Info("DeleteValidatorQueue: removing validator from unbonding queue",
+		"validator", val.OperatorAddress,
+		"unbonding_time", val.UnbondingTime,
+		"unbonding_height", val.UnbondingHeight)
+
 	addrs, err := k.GetUnbondingValidators(ctx, val.UnbondingTime, val.UnbondingHeight)
 	if err != nil {
+		k.Logger(ctx).Error("DeleteValidatorQueue: failed to get validators",
+			"error", err,
+			"validator", val.OperatorAddress)
 		return err
 	}
+
+	k.Logger(ctx).Info("DeleteValidatorQueue: current queue before deletion",
+		"existing_count", len(addrs),
+		"existing_validators", addrs)
+
 	newAddrs := []string{}
 
 	// since address string may change due to Bech32 prefix change, we parse the addresses into bytes
@@ -548,7 +619,15 @@ func (k Keeper) DeleteValidatorQueue(ctx context.Context, val types.Validator) e
 		}
 	}
 
+	k.Logger(ctx).Info("DeleteValidatorQueue: new queue after deletion",
+		"new_count", len(newAddrs),
+		"new_validators", newAddrs,
+		"removed", len(addrs)-len(newAddrs))
+
 	if len(newAddrs) == 0 {
+		k.Logger(ctx).Info("DeleteValidatorQueue: queue empty, deleting entire time slice",
+			"time", val.UnbondingTime,
+			"height", val.UnbondingHeight)
 		return k.DeleteValidatorQueueTimeSlice(ctx, val.UnbondingTime, val.UnbondingHeight)
 	}
 
@@ -575,10 +654,19 @@ func (k Keeper) UnbondAllMatureValidators(ctx context.Context) error {
 	blockTime := sdkCtx.BlockTime()
 	blockHeight := sdkCtx.BlockHeight()
 
+	k.Logger(ctx).Info("UnbondAllMatureValidators: starting EndBlock processing",
+		"block_time", blockTime,
+		"block_height", blockHeight)
+
 	unbondingValidators, err := k.GetPendingUnbondingValidators(ctx, blockTime, blockHeight)
 	if err != nil {
+		k.Logger(ctx).Error("UnbondAllMatureValidators: failed to get pending validators",
+			"error", err)
 		return err
 	}
+
+	k.Logger(ctx).Info("UnbondAllMatureValidators: retrieved pending validators",
+		"total_queue_entries", len(unbondingValidators))
 
 	keys := make([]string, 0, len(unbondingValidators))
 	for k := range unbondingValidators {
@@ -587,13 +675,33 @@ func (k Keeper) UnbondAllMatureValidators(ctx context.Context) error {
 
 	types.SortValidatorQueueKeysByAscendingTimestampOrder(keys)
 
+	k.Logger(ctx).Info("UnbondAllMatureValidators: sorted queue keys",
+		"sorted_keys", keys)
+
+	processedCount := 0
+	skippedCount := 0
+
 	for _, key := range keys {
 		time, height, err := types.ParseCacheValidatorQueueKey(key)
 		if err != nil {
+			k.Logger(ctx).Error("UnbondAllMatureValidators: failed to parse key",
+				"error", err,
+				"key", key)
 			return fmt.Errorf("failed to parse unbonding key: %w", err)
 		}
 
+		k.Logger(ctx).Info("UnbondAllMatureValidators: processing queue entry",
+			"key", key,
+			"time", time,
+			"height", height,
+			"validators_count", len(unbondingValidators[key]),
+			"validators", unbondingValidators[key])
+
 		if nonMature := time.After(blockTime); nonMature {
+			k.Logger(ctx).Info("UnbondAllMatureValidators: reached non-mature validators, stopping",
+				"unbonding_time", time,
+				"block_time", blockTime,
+				"skipped_entries", len(keys)-processedCount-skippedCount)
 			return nil
 		}
 
@@ -601,42 +709,104 @@ func (k Keeper) UnbondAllMatureValidators(ctx context.Context) error {
 		// We only unbond if the height and time are less than the current height
 		// and time.
 		if height <= blockHeight && (time.Before(blockTime) || time.Equal(blockTime)) {
+			k.Logger(ctx).Info("UnbondAllMatureValidators: queue entry is mature, processing validators",
+				"time", time,
+				"height", height,
+				"validator_count", len(unbondingValidators[key]))
+
 			for _, valAddr := range unbondingValidators[key] {
+				k.Logger(ctx).Info("UnbondAllMatureValidators: processing validator",
+					"validator", valAddr,
+					"time", time,
+					"height", height)
+
 				addr, err := k.validatorAddressCodec.StringToBytes(valAddr)
 				if err != nil {
+					k.Logger(ctx).Error("UnbondAllMatureValidators: failed to parse validator address",
+						"error", err,
+						"validator", valAddr)
 					return err
 				}
 				val, err := k.GetValidator(ctx, addr)
 				if err != nil {
+					k.Logger(ctx).Error("UnbondAllMatureValidators: validator not found",
+						"error", err,
+						"validator", valAddr)
 					return errorsmod.Wrap(err, "validator in the unbonding queue was not found")
 				}
 
+				k.Logger(ctx).Info("UnbondAllMatureValidators: validator details",
+					"validator", valAddr,
+					"status", val.Status.String(),
+					"jailed", val.Jailed,
+					"tokens", val.Tokens.String(),
+					"delegator_shares", val.DelegatorShares.String())
+
 				if !val.IsUnbonding() {
+					k.Logger(ctx).Error("UnbondAllMatureValidators: validator not in unbonding state",
+						"validator", valAddr,
+						"status", val.Status.String())
 					return fmt.Errorf("unexpected validator in unbonding queue; status was not unbonding")
 				}
 
 				val, err = k.UnbondingToUnbonded(ctx, val)
 				if err != nil {
+					k.Logger(ctx).Error("UnbondAllMatureValidators: failed to transition to unbonded",
+						"error", err,
+						"validator", valAddr)
 					return err
 				}
 
+				k.Logger(ctx).Info("UnbondAllMatureValidators: validator transitioned to unbonded",
+					"validator", valAddr,
+					"delegator_shares", val.DelegatorShares.String())
+
 				if val.GetDelegatorShares().IsZero() {
+					k.Logger(ctx).Info("UnbondAllMatureValidators: validator has zero shares, removing",
+						"validator", valAddr)
+
 					str, err := k.validatorAddressCodec.StringToBytes(val.GetOperator())
 					if err != nil {
 						return err
 					}
 					if err = k.RemoveValidator(ctx, str); err != nil {
+						k.Logger(ctx).Error("UnbondAllMatureValidators: failed to remove validator",
+							"error", err,
+							"validator", valAddr)
 						return err
 					}
+
+					k.Logger(ctx).Info("UnbondAllMatureValidators: validator removed",
+						"validator", valAddr)
 				}
 
 				// remove validator from queue
 				if err = k.DeleteValidatorQueue(ctx, val); err != nil {
+					k.Logger(ctx).Error("UnbondAllMatureValidators: failed to delete from queue",
+						"error", err,
+						"validator", valAddr)
 					return err
 				}
+
+				processedCount++
+				k.Logger(ctx).Info("UnbondAllMatureValidators: successfully processed validator",
+					"validator", valAddr,
+					"total_processed", processedCount)
 			}
+		} else {
+			k.Logger(ctx).Info("UnbondAllMatureValidators: skipping non-mature entry",
+				"time", time,
+				"height", height,
+				"block_time", blockTime,
+				"block_height", blockHeight)
+			skippedCount++
 		}
 	}
+
+	k.Logger(ctx).Info("UnbondAllMatureValidators: completed EndBlock processing",
+		"total_processed", processedCount,
+		"total_skipped", skippedCount)
+
 	return nil
 }
 
@@ -670,11 +840,25 @@ func (k Keeper) GetPendingUnbondingValidators(ctx context.Context, endTime time.
 	if k.cache != nil {
 		addrs, err := k.cache.GetUnbondingValidatorsQueue(ctx)
 		if err == nil {
+			k.Logger(ctx).Info("GetPendingUnbondingValidators: retrieved from cache",
+				"total_keys", len(addrs),
+				"cache_contents", addrs)
 			return addrs, nil
 		}
 		k.Logger(ctx).Error("GetPendingUnbondingValidators from cache failed. Error: %s", err)
 	}
-	return k.GetUnbondingValidatorsFromStore(ctx, endTime, endHeight)
+
+	k.Logger(ctx).Info("GetPendingUnbondingValidators: falling back to store",
+		"end_time", endTime,
+		"end_height", endHeight)
+
+	storeAddrs, err := k.GetUnbondingValidatorsFromStore(ctx, endTime, endHeight)
+	if err == nil {
+		k.Logger(ctx).Info("GetPendingUnbondingValidators: retrieved from store",
+			"total_keys", len(storeAddrs),
+			"store_contents", storeAddrs)
+	}
+	return storeAddrs, err
 }
 
 // GetUnbondingValidatorsFromStore gets unbonding validators from the store for a given height and time.

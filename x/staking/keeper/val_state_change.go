@@ -19,6 +19,11 @@ import (
 // BlockValidatorUpdates calculates the ValidatorUpdates for the current block
 // Called in each EndBlock
 func (k Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpdate, error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	k.Logger(ctx).Info("BlockValidatorUpdates: starting EndBlock",
+		"height", sdkCtx.BlockHeight(),
+		"time", sdkCtx.BlockTime())
+
 	// Calculate validator set changes.
 	//
 	// NOTE: ApplyAndReturnValidatorSetUpdates has to come before
@@ -30,16 +35,22 @@ func (k Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpda
 	// UnbondAllMatureValidatorQueue).
 	validatorUpdates, err := k.ApplyAndReturnValidatorSetUpdates(ctx)
 	if err != nil {
+		k.Logger(ctx).Error("BlockValidatorUpdates: ApplyAndReturnValidatorSetUpdates failed",
+			"error", err)
 		return nil, err
 	}
+
+	k.Logger(ctx).Info("BlockValidatorUpdates: validator set updates applied",
+		"update_count", len(validatorUpdates))
 
 	// unbond all mature validators from the unbonding queue
 	err = k.UnbondAllMatureValidators(ctx)
 	if err != nil {
+		k.Logger(ctx).Error("BlockValidatorUpdates: UnbondAllMatureValidators failed",
+			"error", err)
 		return nil, err
 	}
 
-	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	blockTime := sdkCtx.BlockTime()
 
 	// Remove all mature unbonding delegations from the ubd queue.
@@ -112,6 +123,12 @@ func (k Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpda
 			),
 		)
 	}
+
+	k.Logger(ctx).Info("BlockValidatorUpdates: completed EndBlock",
+		"height", sdkCtx.BlockHeight(),
+		"validator_updates", len(validatorUpdates),
+		"mature_unbonds", len(matureUnbonds),
+		"mature_redelegations", len(matureRedelegations))
 
 	return validatorUpdates, nil
 }
@@ -214,12 +231,32 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 		return nil, err
 	}
 
+	k.Logger(ctx).Info("ApplyAndReturnValidatorSetUpdates: validators no longer bonded",
+		"count", len(noLongerBonded))
+
 	for _, valAddrBytes := range noLongerBonded {
 		validator := k.mustGetValidator(ctx, sdk.ValAddress(valAddrBytes))
+
+		k.Logger(ctx).Info("ApplyAndReturnValidatorSetUpdates: transitioning validator to unbonding",
+			"validator", validator.OperatorAddress,
+			"current_status", validator.Status.String(),
+			"jailed", validator.Jailed,
+			"tokens", validator.Tokens.String())
+
 		validator, err = k.bondedToUnbonding(ctx, validator)
 		if err != nil {
+			k.Logger(ctx).Error("ApplyAndReturnValidatorSetUpdates: bondedToUnbonding failed",
+				"error", err,
+				"validator", validator.OperatorAddress)
 			return nil, err
 		}
+
+		k.Logger(ctx).Info("ApplyAndReturnValidatorSetUpdates: validator transitioned to unbonding",
+			"validator", validator.OperatorAddress,
+			"new_status", validator.Status.String(),
+			"unbonding_time", validator.UnbondingTime,
+			"unbonding_height", validator.UnbondingHeight)
+
 		str, err := k.validatorAddressCodec.StringToBytes(validator.GetOperator())
 		if err != nil {
 			return nil, err
@@ -372,6 +409,12 @@ func (k Keeper) bondValidator(ctx context.Context, validator types.Validator) (t
 
 // BeginUnbondingValidator performs all the store operations for when a validator begins unbonding
 func (k Keeper) BeginUnbondingValidator(ctx context.Context, validator types.Validator) (types.Validator, error) {
+	k.Logger(ctx).Info("BeginUnbondingValidator: starting transition to unbonding",
+		"validator", validator.OperatorAddress,
+		"status", validator.Status.String(),
+		"jailed", validator.Jailed,
+		"tokens", validator.Tokens.String())
+
 	params, err := k.GetParams(ctx)
 	if err != nil {
 		return validator, err
@@ -394,6 +437,14 @@ func (k Keeper) BeginUnbondingValidator(ctx context.Context, validator types.Val
 	validator.UnbondingTime = sdkCtx.BlockHeader().Time.Add(params.UnbondingTime)
 	validator.UnbondingHeight = sdkCtx.BlockHeader().Height
 
+	k.Logger(ctx).Info("BeginUnbondingValidator: calculated unbonding completion",
+		"validator", validator.OperatorAddress,
+		"unbonding_time", validator.UnbondingTime,
+		"unbonding_height", validator.UnbondingHeight,
+		"current_time", sdkCtx.BlockHeader().Time,
+		"current_height", sdkCtx.BlockHeader().Height,
+		"unbonding_period", params.UnbondingTime)
+
 	// save the now unbonded validator record and power index
 	if err = k.SetValidator(ctx, validator); err != nil {
 		return validator, err
@@ -405,6 +456,9 @@ func (k Keeper) BeginUnbondingValidator(ctx context.Context, validator types.Val
 
 	// Adds to unbonding validator queue
 	if err = k.InsertUnbondingValidatorQueue(ctx, validator); err != nil {
+		k.Logger(ctx).Error("BeginUnbondingValidator: failed to insert into unbonding queue",
+			"error", err,
+			"validator", validator.OperatorAddress)
 		return validator, err
 	}
 
@@ -422,6 +476,11 @@ func (k Keeper) BeginUnbondingValidator(ctx context.Context, validator types.Val
 	if err := k.Hooks().AfterValidatorBeginUnbonding(ctx, consAddr, str); err != nil {
 		return validator, err
 	}
+
+	k.Logger(ctx).Info("BeginUnbondingValidator: successfully transitioned to unbonding",
+		"validator", validator.OperatorAddress,
+		"unbonding_time", validator.UnbondingTime,
+		"unbonding_height", validator.UnbondingHeight)
 
 	return validator, nil
 }
