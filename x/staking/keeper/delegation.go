@@ -447,43 +447,77 @@ func (k Keeper) SetUnbondingDelegationEntry(
 // is a slice of DVPairs corresponding to unbonding delegations that expire at a
 // certain time.
 func (k Keeper) GetUBDQueueTimeSlice(ctx context.Context, timestamp time.Time) (dvPairs []types.DVPair, err error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] GetUBDQueueTimeSlice called",
+		"timestamp", timestamp,
+		"block_height", sdkCtx.BlockHeight(),
+		"cache_enabled", k.cache != nil)
+
 	if k.cache != nil {
 		cachedPairs, err := k.cache.GetUnbondingDelegationsQueueEntry(ctx, timestamp)
 		if err == nil {
+			k.Logger(ctx).Info("[UNBOND-DEBUG] Cache HIT - returning cached data",
+				"timestamp", timestamp,
+				"num_pairs", len(cachedPairs),
+				"pairs", fmt.Sprintf("%+v", cachedPairs))
 			return cachedPairs, nil
 		}
-		k.Logger(ctx).Error("GetUBDQueueTimeSlice from cache failed. Error: %s", err)
+		k.Logger(ctx).Error("[UNBOND-DEBUG] Cache MISS - falling back to store",
+			"timestamp", timestamp,
+			"error", err)
 	}
 
 	store := k.storeService.OpenKVStore(ctx)
 
 	bz, err := store.Get(types.GetUnbondingDelegationTimeKey(timestamp))
 	if bz == nil || err != nil {
+		k.Logger(ctx).Info("[UNBOND-DEBUG] Store returned empty/error",
+			"timestamp", timestamp,
+			"bz_nil", bz == nil,
+			"error", err)
 		return []types.DVPair{}, err
 	}
 
 	pairs := types.DVPairs{}
 	err = k.cdc.Unmarshal(bz, &pairs)
 
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Store read successful",
+		"timestamp", timestamp,
+		"num_pairs", len(pairs.Pairs),
+		"pairs", fmt.Sprintf("%+v", pairs.Pairs))
+
 	return pairs.Pairs, err
 }
 
 // SetUBDQueueTimeSlice sets a specific unbonding queue timeslice.
 func (k Keeper) SetUBDQueueTimeSlice(ctx context.Context, timestamp time.Time, keys []types.DVPair) error {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] SetUBDQueueTimeSlice called",
+		"timestamp", timestamp,
+		"block_height", sdkCtx.BlockHeight(),
+		"num_pairs", len(keys),
+		"pairs", fmt.Sprintf("%+v", keys))
+
 	store := k.storeService.OpenKVStore(ctx)
 	bz, err := k.cdc.Marshal(&types.DVPairs{Pairs: keys})
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] Marshal failed", "error", err)
 		return err
 	}
 	err = store.Set(types.GetUnbondingDelegationTimeKey(timestamp), bz)
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] Store Set failed", "error", err)
 		return err
 	}
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Store write successful", "timestamp", timestamp)
 
 	if k.cache != nil {
 		err = k.cache.SetUnbondingDelegationsQueueEntry(ctx, sdk.FormatTimeString(timestamp), keys)
 		if err != nil {
-			k.Logger(ctx).Error("SetUBDQueueTimeSlice from cache failed. Error: %s", err)
+			k.Logger(ctx).Error("[UNBOND-DEBUG] Cache update failed", "error", err)
+		} else {
+			k.Logger(ctx).Info("[UNBOND-DEBUG] Cache updated successfully", "timestamp", timestamp)
 		}
 	}
 	return nil
@@ -493,13 +527,26 @@ func (k Keeper) SetUBDQueueTimeSlice(ctx context.Context, timestamp time.Time, k
 // in the unbonding queue.
 func (k Keeper) InsertUBDQueue(ctx context.Context, ubd types.UnbondingDelegation, completionTime time.Time) error {
 	dvPair := types.DVPair{DelegatorAddress: ubd.DelegatorAddress, ValidatorAddress: ubd.ValidatorAddress}
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] InsertUBDQueue called",
+		"delegator", ubd.DelegatorAddress,
+		"validator", ubd.ValidatorAddress,
+		"completion_time", completionTime,
+		"block_height", sdkCtx.BlockHeight())
 
 	timeSlice, err := k.GetUBDQueueTimeSlice(ctx, completionTime)
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] InsertUBDQueue GetTimeSlice failed", "error", err)
 		return err
 	}
 
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Current timeSlice retrieved",
+		"existing_entries", len(timeSlice),
+		"existing_pairs", fmt.Sprintf("%+v", timeSlice))
+
 	if len(timeSlice) == 0 {
+		k.Logger(ctx).Info("[UNBOND-DEBUG] Creating NEW timeSlice entry")
 		if err = k.SetUBDQueueTimeSlice(ctx, completionTime, []types.DVPair{dvPair}); err != nil {
 			return err
 		}
@@ -507,6 +554,9 @@ func (k Keeper) InsertUBDQueue(ctx context.Context, ubd types.UnbondingDelegatio
 	}
 
 	timeSlice = append(timeSlice, dvPair)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Appending to EXISTING timeSlice",
+		"new_total_entries", len(timeSlice),
+		"new_pairs", fmt.Sprintf("%+v", timeSlice))
 	return k.SetUBDQueueTimeSlice(ctx, completionTime, timeSlice)
 }
 
@@ -525,10 +575,20 @@ func (k Keeper) UBDQueueIteratorAll(ctx context.Context) (corestore.Iterator, er
 
 // DequeueAllMatureUBDQueue returns a concatenated list of all the timeslices, and deletes the matured timeslices from the queue.
 func (k Keeper) DequeueAllMatureUBDQueue(ctx context.Context, currTime time.Time) (matureUnbonds []types.DVPair, err error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ========== ENDBLOCKER: DequeueAllMatureUBDQueue START ==========",
+		"current_time", currTime,
+		"block_height", sdkCtx.BlockHeight())
+
 	unbondingDelegations, err := k.GetUBDs(ctx, currTime)
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] GetUBDs failed", "error", err)
 		return matureUnbonds, err
 	}
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] GetUBDs returned",
+		"num_timeslices", len(unbondingDelegations),
+		"timeslices", fmt.Sprintf("%+v", unbondingDelegations))
 
 	keys := make([]string, 0, len(unbondingDelegations))
 
@@ -547,20 +607,33 @@ func (k Keeper) DequeueAllMatureUBDQueue(ctx context.Context, currTime time.Time
 		}
 
 		if nonMature := t.After(currTime); nonMature {
+			k.Logger(ctx).Info("[UNBOND-DEBUG] Found non-mature entry, stopping",
+				"entry_time", t,
+				"current_time", currTime)
 			return matureUnbonds, nil
 		}
 		pairs := unbondingDelegations[key]
+		k.Logger(ctx).Info("[UNBOND-DEBUG] Processing mature unbonding",
+			"time", t,
+			"num_pairs", len(pairs),
+			"pairs", fmt.Sprintf("%+v", pairs))
 		matureUnbonds = append(matureUnbonds, pairs...)
 
 		err = store.Delete(types.GetUnbondingDelegationTimeKey(t))
 		if err != nil {
+			k.Logger(ctx).Error("[UNBOND-DEBUG] Failed to delete from store", "error", err)
 			return matureUnbonds, err
 		}
 
 		if k.cache != nil {
 			k.cache.DeleteUnbondingDelegationQueueEntry(key)
+			k.Logger(ctx).Info("[UNBOND-DEBUG] Deleted from cache", "key", key)
 		}
 	}
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ========== ENDBLOCKER: DequeueAllMatureUBDQueue END ==========",
+		"total_mature_unbonds", len(matureUnbonds),
+		"mature_unbonds", fmt.Sprintf("%+v", matureUnbonds))
 
 	return matureUnbonds, nil
 }
@@ -1208,6 +1281,14 @@ func (k Keeper) getBeginInfo(
 func (k Keeper) Undelegate(
 	ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress, sharesAmount math.LegacyDec,
 ) (time.Time, math.Int, error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ========== UNDELEGATE START ==========",
+		"delegator", delAddr.String(),
+		"validator", valAddr.String(),
+		"shares", sharesAmount.String(),
+		"block_height", sdkCtx.BlockHeight(),
+		"block_time", sdkCtx.BlockTime())
+
 	validator, err := k.GetValidator(ctx, valAddr)
 	if err != nil {
 		return time.Time{}, math.Int{}, err
@@ -1227,6 +1308,9 @@ func (k Keeper) Undelegate(
 		return time.Time{}, math.Int{}, err
 	}
 
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Unbonded amount calculated",
+		"return_amount", returnAmount.String())
+
 	// transfer the validator tokens to the not bonded pool
 	if validator.IsBonded() {
 		err = k.bondedTokensToNotBonded(ctx, returnAmount)
@@ -1240,17 +1324,28 @@ func (k Keeper) Undelegate(
 		return time.Time{}, math.Int{}, err
 	}
 
-	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	completionTime := sdkCtx.BlockHeader().Time.Add(unbondingTime)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Completion time calculated",
+		"unbonding_time", unbondingTime,
+		"completion_time", completionTime)
+
 	ubd, err := k.SetUnbondingDelegationEntry(ctx, delAddr, valAddr, sdkCtx.BlockHeight(), completionTime, returnAmount)
 	if err != nil {
 		return time.Time{}, math.Int{}, err
 	}
 
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Unbonding delegation entry created",
+		"num_entries", len(ubd.Entries))
+
 	err = k.InsertUBDQueue(ctx, ubd, completionTime)
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] InsertUBDQueue failed", "error", err)
 		return time.Time{}, math.Int{}, err
 	}
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ========== UNDELEGATE SUCCESS ==========",
+		"completion_time", completionTime,
+		"return_amount", returnAmount.String())
 
 	return completionTime, returnAmount, nil
 }
@@ -1259,10 +1354,22 @@ func (k Keeper) Undelegate(
 // retrieved unbonding delegation object and returns the total unbonding balance
 // or an error upon failure.
 func (k Keeper) CompleteUnbonding(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) (sdk.Coins, error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	k.Logger(ctx).Info("[UNBOND-DEBUG] CompleteUnbonding called",
+		"delegator", delAddr.String(),
+		"validator", valAddr.String(),
+		"block_height", sdkCtx.BlockHeight(),
+		"block_time", sdkCtx.BlockTime())
+
 	ubd, err := k.GetUnbondingDelegation(ctx, delAddr, valAddr)
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] GetUnbondingDelegation failed", "error", err)
 		return nil, err
 	}
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Retrieved unbonding delegation",
+		"num_entries", len(ubd.Entries),
+		"entries", fmt.Sprintf("%+v", ubd.Entries))
 
 	bondDenom, err := k.BondDenom(ctx)
 	if err != nil {
@@ -1270,7 +1377,6 @@ func (k Keeper) CompleteUnbonding(ctx context.Context, delAddr sdk.AccAddress, v
 	}
 
 	balances := sdk.NewCoins()
-	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	ctxTime := sdkCtx.BlockHeader().Time
 
 	delegatorAddress, err := k.authKeeper.AddressCodec().StringToBytes(ubd.DelegatorAddress)
@@ -1279,11 +1385,19 @@ func (k Keeper) CompleteUnbonding(ctx context.Context, delAddr sdk.AccAddress, v
 	}
 
 	// loop through all the entries and complete unbonding mature entries
+	completedCount := 0
 	for i := 0; i < len(ubd.Entries); i++ {
 		entry := ubd.Entries[i]
+		k.Logger(ctx).Info("[UNBOND-DEBUG] Checking entry",
+			"index", i,
+			"completion_time", entry.CompletionTime,
+			"is_mature", entry.IsMature(ctxTime),
+			"balance", entry.Balance.String())
+
 		if entry.IsMature(ctxTime) {
 			ubd.RemoveEntry(int64(i))
 			i--
+			completedCount++
 
 			// track undelegation only when remaining or truncated shares are non-zero
 			if !entry.Balance.IsZero() {
@@ -1291,22 +1405,33 @@ func (k Keeper) CompleteUnbonding(ctx context.Context, delAddr sdk.AccAddress, v
 				if err := k.bankKeeper.UndelegateCoinsFromModuleToAccount(
 					ctx, types.NotBondedPoolName, delegatorAddress, sdk.NewCoins(amt),
 				); err != nil {
+					k.Logger(ctx).Error("[UNBOND-DEBUG] UndelegateCoins failed", "error", err)
 					return nil, err
 				}
 
+				k.Logger(ctx).Info("[UNBOND-DEBUG] Completed unbonding entry",
+					"amount", amt.String())
 				balances = balances.Add(amt)
 			}
 		}
 	}
 
+	k.Logger(ctx).Info("[UNBOND-DEBUG] Completed processing entries",
+		"completed_count", completedCount,
+		"remaining_entries", len(ubd.Entries),
+		"total_balance", balances.String())
+
 	// set the unbonding delegation or remove it if there are no more entries
 	if len(ubd.Entries) == 0 {
+		k.Logger(ctx).Info("[UNBOND-DEBUG] Removing unbonding delegation (no entries left)")
 		err = k.RemoveUnbondingDelegation(ctx, ubd)
 	} else {
+		k.Logger(ctx).Info("[UNBOND-DEBUG] Updating unbonding delegation (entries remaining)")
 		err = k.SetUnbondingDelegation(ctx, ubd)
 	}
 
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] Failed to update/remove unbonding delegation", "error", err)
 		return nil, err
 	}
 

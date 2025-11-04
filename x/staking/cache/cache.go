@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -249,26 +250,56 @@ func (c *ValidatorsQueueCache) GetUnbondingDelegationsQueue(ctx context.Context)
 }
 
 func (c *ValidatorsQueueCache) GetUnbondingDelegationsQueueEntry(ctx context.Context, endTime time.Time) ([]types.DVPair, error) {
-	if c.unbondingDelegationsQueue.full.Load() {
+	isFull := c.unbondingDelegationsQueue.full.Load()
+	isDirty := c.unbondingDelegationsQueue.dirty.Load()
+	c.logger(ctx).Info("[UNBOND-DEBUG] CACHE: GetUnbondingDelegationsQueueEntry called",
+		"end_time", endTime,
+		"cache_full", isFull,
+		"cache_dirty", isDirty,
+		"cache_size", len(c.unbondingDelegationsQueue.data))
+
+	if isFull {
+		c.logger(ctx).Error("[UNBOND-DEBUG] CACHE: Cache is FULL, returning error")
 		return nil, types.ErrCacheMaxSizeReached
 	}
 
-	if c.unbondingDelegationsQueue.dirty.Load() {
+	if isDirty {
+		c.logger(ctx).Info("[UNBOND-DEBUG] CACHE: Cache is dirty, reloading from store")
 		err := c.loadUnbondingDelegationsQueue(ctx)
 		if err != nil {
+			c.logger(ctx).Error("[UNBOND-DEBUG] CACHE: Failed to reload from store", "error", err)
 			return nil, err
 		}
+		c.logger(ctx).Info("[UNBOND-DEBUG] CACHE: Successfully reloaded from store")
 	}
 
-	return c.unbondingDelegationsQueue.getEntry(sdk.FormatTimeString(endTime)), nil
+	result := c.unbondingDelegationsQueue.getEntry(sdk.FormatTimeString(endTime))
+	c.logger(ctx).Info("[UNBOND-DEBUG] CACHE: Returning entry",
+		"num_pairs", len(result),
+		"pairs", fmt.Sprintf("%+v", result))
+	return result, nil
 }
 
 func (c *ValidatorsQueueCache) SetUnbondingDelegationsQueueEntry(ctx context.Context, key string, delegations []types.DVPair) error {
-	if c.unbondingDelegationsQueue.full.Load() {
+	isFull := c.unbondingDelegationsQueue.full.Load()
+	c.logger(ctx).Info("[UNBOND-DEBUG] CACHE: SetUnbondingDelegationsQueueEntry called",
+		"key", key,
+		"num_delegations", len(delegations),
+		"cache_full", isFull,
+		"current_cache_size", len(c.unbondingDelegationsQueue.data),
+		"delegations", fmt.Sprintf("%+v", delegations))
+
+	if isFull {
 		c.unbondingDelegationsQueue.dirty.Store(true)
+		c.logger(ctx).Error("[UNBOND-DEBUG] CACHE: Cache is FULL, marking dirty and returning error")
 		return types.ErrCacheMaxSizeReached
 	}
 	c.unbondingDelegationsQueue.setEntry(key, delegations)
+
+	newIsFull := c.unbondingDelegationsQueue.full.Load()
+	c.logger(ctx).Info("[UNBOND-DEBUG] CACHE: Entry set successfully",
+		"new_cache_size", len(c.unbondingDelegationsQueue.data),
+		"cache_now_full", newIsFull)
 	return nil
 }
 

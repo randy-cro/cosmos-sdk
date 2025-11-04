@@ -42,26 +42,51 @@ func (k Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpda
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	blockTime := sdkCtx.BlockTime()
 
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ========== ENDBLOCKER: Processing Unbonding Delegations ==========",
+		"block_height", sdkCtx.BlockHeight(),
+		"block_time", blockTime)
+
 	// Remove all mature unbonding delegations from the ubd queue.
 	matureUnbonds, err := k.DequeueAllMatureUBDQueue(ctx, blockTime)
 	if err != nil {
+		k.Logger(ctx).Error("[UNBOND-DEBUG] ENDBLOCKER: DequeueAllMatureUBDQueue failed", "error", err)
 		return nil, err
 	}
 
-	for _, dvPair := range matureUnbonds {
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ENDBLOCKER: Processing mature unbonds",
+		"num_mature_unbonds", len(matureUnbonds),
+		"mature_unbonds", fmt.Sprintf("%+v", matureUnbonds))
+
+	for i, dvPair := range matureUnbonds {
+		k.Logger(ctx).Info("[UNBOND-DEBUG] ENDBLOCKER: Processing unbond",
+			"index", i,
+			"delegator", dvPair.DelegatorAddress,
+			"validator", dvPair.ValidatorAddress)
+
 		addr, err := k.validatorAddressCodec.StringToBytes(dvPair.ValidatorAddress)
 		if err != nil {
+			k.Logger(ctx).Error("[UNBOND-DEBUG] ENDBLOCKER: Failed to parse validator address", "error", err)
 			return nil, err
 		}
 		delegatorAddress, err := k.authKeeper.AddressCodec().StringToBytes(dvPair.DelegatorAddress)
 		if err != nil {
+			k.Logger(ctx).Error("[UNBOND-DEBUG] ENDBLOCKER: Failed to parse delegator address", "error", err)
 			return nil, err
 		}
 
 		balances, err := k.CompleteUnbonding(ctx, delegatorAddress, addr)
 		if err != nil {
+			k.Logger(ctx).Error("[UNBOND-DEBUG] ENDBLOCKER: CompleteUnbonding failed, continuing",
+				"error", err,
+				"delegator", dvPair.DelegatorAddress,
+				"validator", dvPair.ValidatorAddress)
 			continue
 		}
+
+		k.Logger(ctx).Info("[UNBOND-DEBUG] ENDBLOCKER: Unbonding completed successfully",
+			"delegator", dvPair.DelegatorAddress,
+			"validator", dvPair.ValidatorAddress,
+			"balances", balances.String())
 
 		sdkCtx.EventManager().EmitEvent(
 			sdk.NewEvent(
@@ -72,6 +97,9 @@ func (k Keeper) BlockValidatorUpdates(ctx context.Context) ([]abci.ValidatorUpda
 			),
 		)
 	}
+
+	k.Logger(ctx).Info("[UNBOND-DEBUG] ========== ENDBLOCKER: Finished Processing Unbonding Delegations ==========",
+		"processed_count", len(matureUnbonds))
 	// Remove all mature redelegations from the red queue.
 	matureRedelegations, err := k.DequeueAllMatureRedelegationQueue(ctx, blockTime)
 	if err != nil {
