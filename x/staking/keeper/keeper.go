@@ -92,7 +92,7 @@ func NewKeeper(
 
 func (k Keeper) useCache(ctx context.Context) bool {
 	execMode := sdk.UnwrapSDKContext(ctx).ExecMode()
-	return k.cache != nil && execMode != sdk.ExecModeSimulate
+	return k.cache != nil && execMode == sdk.ExecModeFinalize
 }
 
 // Logger returns a module-specific logger.
