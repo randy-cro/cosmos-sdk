@@ -578,6 +578,8 @@ func (rs *Store) WorkingStoreInfos() []types.StoreInfo {
 	for _, key := range storeKeys {
 		store := rs.stores[key]
 
+		rs.logger.Info("WorkingStoreInfos", "key", key.Name(), "store", store.GetStoreType())
+
 		if store.GetStoreType() != types.StoreTypeIAVL {
 			continue
 		}
