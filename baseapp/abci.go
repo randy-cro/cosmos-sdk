@@ -1062,9 +1062,14 @@ func (app *BaseApp) workingHash() []byte {
 	commitHash := app.cms.WorkingHash()
 	app.logger.Debug("hash of all writes", "workingHash", fmt.Sprintf("%X", commitHash))
 
-	// Log per-store working hashes for debugging app hash mismatches
-	if rms, ok := app.cms.(*rootmulti.Store); ok {
-		storeInfos := rms.WorkingStoreInfos()
+	// Log per-store working hashes for debugging app hash mismatches.
+	// Use an interface assertion so this works with both the SDK's rootmulti.Store
+	// and cronos-store's memiavl-backed rootmulti.Store.
+	type workingStoreInfosProvider interface {
+		WorkingStoreInfos() []storetypes.StoreInfo
+	}
+	if provider, ok := app.cms.(workingStoreInfosProvider); ok {
+		storeInfos := provider.WorkingStoreInfos()
 		for _, si := range storeInfos {
 			app.logger.Info("store working hash",
 				"store", si.Name,
