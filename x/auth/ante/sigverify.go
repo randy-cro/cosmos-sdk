@@ -418,6 +418,18 @@ func (svd SigVerificationDecorator) anteHandle(ctx sdk.Context, tx sdk.Tx, simul
 
 func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, next sdk.AnteHandler) (newCtx sdk.Context, err error) {
 	if v, ok := ctx.GetIncarnationCache(SigVerificationResultCacheKey); ok {
+		// Incarnation cache hit: skip the expensive crypto verification, but still
+		// perform gas-consuming store reads (GetSignerAcc) so that gas metering is
+		// deterministic and matches sequential execution.  Without this, re-executed
+		// transactions in Block-STM would report less gas than their sequential
+		// counterparts, leading to app-hash mismatches via the feemarket module.
+		if sigTx, ok := tx.(authsigning.Tx); ok {
+			if signers, sigErr := sigTx.GetSigners(); sigErr == nil {
+				for _, signer := range signers {
+					_, _ = GetSignerAcc(ctx, svd.ak, signer)
+				}
+			}
+		}
 		// can't convert `nil` to interface
 		if v != nil {
 			err = v.(error)
