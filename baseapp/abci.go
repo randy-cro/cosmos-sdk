@@ -2,6 +2,7 @@ package baseapp
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -908,6 +909,7 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 				res.AppHash = app.workingHash()
 			}
 
+			app.logFinalizeBlockResponse(req, res)
 			return res, err
 		}
 
@@ -922,7 +924,52 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 		res.AppHash = app.workingHash()
 	}
 
+	app.logFinalizeBlockResponse(req, res)
 	return res, err
+}
+
+// logFinalizeBlockResponse logs the full block response details for debugging app hash mismatches.
+func (app *BaseApp) logFinalizeBlockResponse(req *abci.RequestFinalizeBlock, res *abci.ResponseFinalizeBlock) {
+	if res == nil {
+		return
+	}
+
+	app.logger.Info("FinalizeBlock response",
+		"height", req.Height,
+		"hash", hex.EncodeToString(req.Hash),
+		"app_hash", hex.EncodeToString(res.AppHash),
+		"num_txs", len(res.TxResults),
+		"num_events", len(res.Events),
+		"num_validator_updates", len(res.ValidatorUpdates),
+	)
+
+	for i, txResult := range res.TxResults {
+		app.logger.Info("FinalizeBlock tx result",
+			"height", req.Height,
+			"tx_index", i,
+			"code", txResult.Code,
+			"gas_wanted", txResult.GasWanted,
+			"gas_used", txResult.GasUsed,
+			"log", txResult.Log,
+			"data_hex", hex.EncodeToString(txResult.Data),
+			"num_events", len(txResult.Events),
+			"codespace", txResult.Codespace,
+			"info", txResult.Info,
+		)
+		for j, event := range txResult.Events {
+			attrs := make([]string, 0, len(event.Attributes))
+			for _, attr := range event.Attributes {
+				attrs = append(attrs, fmt.Sprintf("%s=%s", attr.Key, attr.Value))
+			}
+			app.logger.Info("FinalizeBlock tx event",
+				"height", req.Height,
+				"tx_index", i,
+				"event_index", j,
+				"type", event.Type,
+				"attributes", strings.Join(attrs, ", "),
+			)
+		}
+	}
 }
 
 // checkHalt checkes if height or time exceeds halt-height or halt-time respectively.
@@ -1014,6 +1061,17 @@ func (app *BaseApp) workingHash() []byte {
 	// Get the hash of all writes in order to return the apphash to the comet in finalizeBlock.
 	commitHash := app.cms.WorkingHash()
 	app.logger.Debug("hash of all writes", "workingHash", fmt.Sprintf("%X", commitHash))
+
+	// Log per-store working hashes for debugging app hash mismatches
+	if rms, ok := app.cms.(*rootmulti.Store); ok {
+		storeInfos := rms.WorkingStoreInfos()
+		for _, si := range storeInfos {
+			app.logger.Info("store working hash",
+				"store", si.Name,
+				"hash", fmt.Sprintf("%X", si.CommitId.Hash),
+			)
+		}
+	}
 
 	return commitHash
 }

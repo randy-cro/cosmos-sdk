@@ -569,6 +569,37 @@ func (rs *Store) WorkingHash() []byte {
 	return types.CommitInfo{StoreInfos: storeInfos}.Hash()
 }
 
+// WorkingStoreInfos returns the per-store working hashes (before commit).
+// This is useful for debugging app hash mismatches by comparing individual store hashes.
+func (rs *Store) WorkingStoreInfos() []types.StoreInfo {
+	storeInfos := make([]types.StoreInfo, 0, len(rs.stores))
+	storeKeys := keysFromStoreKeyMap(rs.stores)
+
+	for _, key := range storeKeys {
+		store := rs.stores[key]
+
+		if store.GetStoreType() != types.StoreTypeIAVL {
+			continue
+		}
+
+		if !rs.removalMap[key] {
+			si := types.StoreInfo{
+				Name: key.Name(),
+				CommitId: types.CommitID{
+					Hash: store.WorkingHash(),
+				},
+			}
+			storeInfos = append(storeInfos, si)
+		}
+	}
+
+	sort.SliceStable(storeInfos, func(i, j int) bool {
+		return storeInfos[i].Name < storeInfos[j].Name
+	})
+
+	return storeInfos
+}
+
 // CacheWrap implements CacheWrapper/Store/CommitStore.
 func (rs *Store) CacheWrap() types.CacheWrap {
 	return rs.CacheMultiStore().(types.CacheWrap)
