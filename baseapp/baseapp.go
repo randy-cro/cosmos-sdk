@@ -2,12 +2,15 @@ package baseapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/errors"
 	abci "github.com/cometbft/cometbft/abci/types"
@@ -982,6 +985,35 @@ func (app *BaseApp) RunTx(mode execMode, txBytes []byte, tx sdk.Tx, txIndex int,
 		msCache.Write()
 		anteEvents = events.ToABCIEvents()
 	}
+
+	// #region agent log
+	if mode == execModeFinalize {
+		func() {
+			gasAfterAnte := ctx.GasMeter().GasConsumed()
+			logData := map[string]any{
+				"id":           fmt.Sprintf("runtx_ante_%d_%d", txIndex, time.Now().UnixNano()),
+				"timestamp":    time.Now().UnixMilli(),
+				"location":     "baseapp/baseapp.go:RunTx:afterAnte",
+				"message":      "Gas after ante handler",
+				"hypothesisId": "B",
+				"data": map[string]any{
+					"txIndex":      txIndex,
+					"gasAfterAnte": gasAfterAnte,
+					"gasWanted":    gasWanted,
+					"hasBlockSTM":  txMultiStore != nil,
+				},
+			}
+			if b, err := json.Marshal(logData); err == nil {
+				f, err := os.OpenFile("/Users/randy.ang/Documents/code/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if err == nil {
+					f.Write(append(b, '\n'))
+					f.Close()
+				}
+			}
+		}()
+	}
+	// #endregion
+
 	switch mode {
 	case execModeCheck:
 		err = app.mempool.InsertWithGasWanted(ctx, tx, gasWanted)
@@ -1008,6 +1040,34 @@ func (app *BaseApp) RunTx(mode execMode, txBytes []byte, tx sdk.Tx, txIndex int,
 	if err == nil {
 		result, err = app.runMsgs(runMsgCtx, msgs, msgsV2, mode)
 	}
+
+	// #region agent log
+	if mode == execModeFinalize {
+		func() {
+			gasAfterMsgs := ctx.GasMeter().GasConsumed()
+			logData := map[string]any{
+				"id":           fmt.Sprintf("runtx_msgs_%d_%d", txIndex, time.Now().UnixNano()),
+				"timestamp":    time.Now().UnixMilli(),
+				"location":     "baseapp/baseapp.go:RunTx:afterMsgs",
+				"message":      "Gas after message execution",
+				"hypothesisId": "C",
+				"data": map[string]any{
+					"txIndex":      txIndex,
+					"gasAfterMsgs": gasAfterMsgs,
+					"hasBlockSTM":  txMultiStore != nil,
+					"msgErr":       err != nil,
+				},
+			}
+			if b, merr := json.Marshal(logData); merr == nil {
+				f, ferr := os.OpenFile("/Users/randy.ang/Documents/code/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if ferr == nil {
+					f.Write(append(b, '\n'))
+					f.Close()
+				}
+			}
+		}()
+	}
+	// #endregion
 
 	// Run optional postHandlers (should run regardless of the execution result).
 	//

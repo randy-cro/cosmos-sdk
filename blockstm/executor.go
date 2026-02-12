@@ -2,7 +2,10 @@ package blockstm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"time"
 )
 
 // Executor fields are not mutated during execution.
@@ -79,6 +82,32 @@ func (e *Executor) NeedsReexecution(version TxnVersion) (TxnVersion, TaskKind) {
 	if aborted {
 		e.mvMemory.ConvertWritesToEstimates(version.Index)
 	}
+
+	// #region agent log
+	func() {
+		logData := map[string]any{
+			"id":           fmt.Sprintf("stm_validate_%d_%d_%d", version.Index, version.Incarnation, time.Now().UnixNano()),
+			"timestamp":    time.Now().UnixMilli(),
+			"location":     "blockstm/executor.go:NeedsReexecution",
+			"message":      "STM validation result",
+			"hypothesisId": "A",
+			"data": map[string]any{
+				"txIndex":     version.Index,
+				"incarnation": version.Incarnation,
+				"valid":       valid,
+				"aborted":     aborted,
+			},
+		}
+		if b, err := json.Marshal(logData); err == nil {
+			f, err := os.OpenFile("/Users/randy.ang/Documents/code/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				f.Write(append(b, '\n'))
+				f.Close()
+			}
+		}
+	}()
+	// #endregion
+
 	return e.scheduler.FinishValidation(version.Index, aborted)
 }
 

@@ -2,8 +2,12 @@ package blockstm
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 
@@ -72,6 +76,10 @@ func (e STMRunner) Run(ctx context.Context, ms storetypes.MultiStore, txs [][]by
 		memTxs, estimates = preEstimates(txs, e.workers, authStore, bankStore, e.coinDenom(ms), e.txDecoder)
 	}
 
+	// #region agent log
+	executionCounts := make([]atomic.Int32, blockSize)
+	// #endregion
+
 	if err := ExecuteBlockWithEstimates(
 		ctx,
 		blockSize,
@@ -80,6 +88,10 @@ func (e STMRunner) Run(ctx context.Context, ms storetypes.MultiStore, txs [][]by
 		e.workers,
 		estimates,
 		func(txn TxnIndex, ms MultiStore) {
+			// #region agent log
+			incarnation := executionCounts[txn].Add(1)
+			// #endregion
+
 			var cache map[string]any
 
 			// only one of the concurrent incarnations gets the cache if there are any, otherwise execute without
@@ -94,6 +106,32 @@ func (e STMRunner) Run(ctx context.Context, ms storetypes.MultiStore, txs [][]by
 				memTx = memTxs[txn]
 			}
 			results[txn] = deliverTx(txs[txn], memTx, msWrapper{ms}, int(txn), cache)
+
+			// #region agent log
+			func() {
+				logData := map[string]any{
+					"id":           fmt.Sprintf("stm_exec_%d_%d_%d", txn, incarnation, time.Now().UnixNano()),
+					"timestamp":    time.Now().UnixMilli(),
+					"location":     "blockstm/txnrunner.go:Run",
+					"message":      "STM tx execution",
+					"hypothesisId": "A",
+					"data": map[string]any{
+						"txIndex":     txn,
+						"incarnation": incarnation,
+						"hasCache":    v != nil,
+						"gasUsed":     results[txn].GasUsed,
+						"gasWanted":   results[txn].GasWanted,
+					},
+				}
+				if b, err := json.Marshal(logData); err == nil {
+					f, err := os.OpenFile("/Users/randy.ang/Documents/code/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+					if err == nil {
+						f.Write(append(b, '\n'))
+						f.Close()
+					}
+				}
+			}()
+			// #endregion
 
 			if v != nil {
 				incarnationCache[txn].Store(v)
