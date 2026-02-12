@@ -1071,7 +1071,7 @@ func (app *BaseApp) workingHash() []byte {
 	if provider, ok := app.cms.(workingStoreInfosProvider); ok {
 		storeInfos := provider.WorkingStoreInfos()
 		for _, si := range storeInfos {
-			app.logger.Info("store working hash",
+			app.logger.Info("xxx store working hash",
 				"store", si.Name,
 				"hash", fmt.Sprintf("%X", si.CommitId.Hash),
 			)
