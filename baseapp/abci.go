@@ -825,7 +825,7 @@ func (app *BaseApp) internalFinalizeBlock(ctx context.Context, req *abci.Request
 		blockGasUsed   uint64
 		blockGasWanted uint64
 	)
-	for _, res := range txResults {
+	for i, res := range txResults {
 		// GasUsed should not be -1 but just in case
 		if res.GasUsed > 0 {
 			blockGasUsed += uint64(res.GasUsed)
@@ -834,7 +834,21 @@ func (app *BaseApp) internalFinalizeBlock(ctx context.Context, req *abci.Request
 		if res.GasWanted > 0 {
 			blockGasWanted += uint64(res.GasWanted)
 		}
+		app.logger.Info("xxx tx gas",
+			"height", req.Height,
+			"tx_index", i,
+			"gas_used", res.GasUsed,
+			"gas_wanted", res.GasWanted,
+			"running_block_gas_used", blockGasUsed,
+			"running_block_gas_wanted", blockGasWanted,
+		)
 	}
+	app.logger.Info("xxx block gas totals",
+		"height", req.Height,
+		"blockGasUsed", blockGasUsed,
+		"blockGasWanted", blockGasWanted,
+		"num_txs", len(txResults),
+	)
 	app.finalizeBlockState.SetContext(
 		app.finalizeBlockState.Context().
 			WithBlockGasUsed(blockGasUsed).
