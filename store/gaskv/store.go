@@ -1,8 +1,6 @@
 package gaskv
 
 import (
-	"encoding/hex"
-	"fmt"
 	"io"
 
 	"cosmossdk.io/store/types"
@@ -65,16 +63,12 @@ func (gs *GStore[V]) GetStoreType() types.StoreType {
 
 // Get implements KVStore, consuming gas based on ReadCostFlat and the read per bytes cost.
 func (gs *GStore[V]) Get(key []byte) (value V) {
-	before := gs.gasMeter.GasConsumed()
 	gs.gasMeter.ConsumeGas(gs.gasConfig.ReadCostFlat, types.GasReadCostFlatDesc)
 	value = gs.parent.Get(key)
 
 	// TODO overflow-safe math?
 	gs.gasMeter.ConsumeGas(gs.gasConfig.ReadCostPerByte*types.Gas(len(key)), types.GasReadPerByteDesc)
 	gs.gasMeter.ConsumeGas(gs.gasConfig.ReadCostPerByte*types.Gas(gs.valueLen(value)), types.GasReadPerByteDesc)
-	after := gs.gasMeter.GasConsumed()
-	fmt.Printf("xxx gaskv Get key=%s keyLen=%d valLen=%d gasDelta=%d totalGas=%d\n",
-		hex.EncodeToString(key), len(key), gs.valueLen(value), after-before, after)
 
 	return value
 }
@@ -83,37 +77,24 @@ func (gs *GStore[V]) Get(key []byte) (value V) {
 func (gs *GStore[V]) Set(key []byte, value V) {
 	types.AssertValidKey(key)
 	types.AssertValidValueGeneric(value, gs.isZero, gs.valueLen)
-	before := gs.gasMeter.GasConsumed()
 	gs.gasMeter.ConsumeGas(gs.gasConfig.WriteCostFlat, types.GasWriteCostFlatDesc)
 	// TODO overflow-safe math?
 	gs.gasMeter.ConsumeGas(gs.gasConfig.WriteCostPerByte*types.Gas(len(key)), types.GasWritePerByteDesc)
 	gs.gasMeter.ConsumeGas(gs.gasConfig.WriteCostPerByte*types.Gas(gs.valueLen(value)), types.GasWritePerByteDesc)
 	gs.parent.Set(key, value)
-	after := gs.gasMeter.GasConsumed()
-	fmt.Printf("xxx gaskv Set key=%s keyLen=%d valLen=%d gasDelta=%d totalGas=%d\n",
-		hex.EncodeToString(key), len(key), gs.valueLen(value), after-before, after)
 }
 
 // Has implements KVStore, consuming gas based on HasCost.
 func (gs *GStore[V]) Has(key []byte) bool {
-	before := gs.gasMeter.GasConsumed()
 	gs.gasMeter.ConsumeGas(gs.gasConfig.HasCost, types.GasHasDesc)
-	result := gs.parent.Has(key)
-	after := gs.gasMeter.GasConsumed()
-	fmt.Printf("xxx gaskv Has key=%s result=%t gasDelta=%d totalGas=%d\n",
-		hex.EncodeToString(key), result, after-before, after)
-	return result
+	return gs.parent.Has(key)
 }
 
 // Delete implements KVStore consuming gas based on DeleteCost.
 func (gs *GStore[V]) Delete(key []byte) {
-	before := gs.gasMeter.GasConsumed()
 	// charge gas to prevent certain attack vectors even though space is being freed
 	gs.gasMeter.ConsumeGas(gs.gasConfig.DeleteCost, types.GasDeleteDesc)
 	gs.parent.Delete(key)
-	after := gs.gasMeter.GasConsumed()
-	fmt.Printf("xxx gaskv Delete key=%s gasDelta=%d totalGas=%d\n",
-		hex.EncodeToString(key), after-before, after)
 }
 
 // Iterator implements the KVStore interface. It returns an iterator which
@@ -215,21 +196,12 @@ func (gi *gasIterator[V]) Error() error {
 // consumeSeekGas consumes on each iteration step a flat gas cost and a variable gas cost
 // based on the current value's length.
 func (gi *gasIterator[V]) consumeSeekGas() {
-	before := gi.gasMeter.GasConsumed()
 	if gi.Valid() {
 		key := gi.Key()
 		value := gi.Value()
 
 		gi.gasMeter.ConsumeGas(gi.gasConfig.ReadCostPerByte*types.Gas(len(key)), types.GasValuePerByteDesc)
 		gi.gasMeter.ConsumeGas(gi.gasConfig.ReadCostPerByte*types.Gas(gi.valueLen(value)), types.GasValuePerByteDesc)
-		after := gi.gasMeter.GasConsumed()
-		fmt.Printf("xxx gaskv IterSeek key=%s keyLen=%d valLen=%d gasDelta=%d totalGas=%d\n",
-			hex.EncodeToString(key), len(key), gi.valueLen(value), after-before, after)
-	} else {
-		gi.gasMeter.ConsumeGas(gi.gasConfig.IterNextCostFlat, types.GasIterNextCostFlatDesc)
-		after := gi.gasMeter.GasConsumed()
-		fmt.Printf("xxx gaskv IterSeek (invalid) gasDelta=%d totalGas=%d\n", after-before, after)
-		return
 	}
 	gi.gasMeter.ConsumeGas(gi.gasConfig.IterNextCostFlat, types.GasIterNextCostFlatDesc)
 }
