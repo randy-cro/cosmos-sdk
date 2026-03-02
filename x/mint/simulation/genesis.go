@@ -64,7 +64,9 @@ func RandomizedGenState(simState *module.SimulationState) {
 
 	mintDenom := simState.BondDenom
 	blocksPerYear := uint64(60 * 60 * 8766 / 5)
-	params := types.NewParams(mintDenom, inflationRateChange, inflationMax, inflationMin, goalBonded, blocksPerYear)
+	decayStartHeight := uint64(1)
+	decayRate := math.LegacyZeroDec() // default to disabled in simulation
+	params := types.NewParams(mintDenom, inflationRateChange, inflationMax, inflationMin, goalBonded, blocksPerYear, decayStartHeight, decayRate)
 
 	mintGenesis := types.NewGenesisState(types.InitialMinter(inflation), params)
 	simState.GenState[types.ModuleName] = simState.Cdc.MustMarshalJSON(mintGenesis)

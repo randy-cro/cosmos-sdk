@@ -12,7 +12,7 @@ import (
 )
 
 // NewParams returns Params instance with the given values.
-func NewParams(mintDenom string, inflationRateChange, inflationMax, inflationMin, goalBonded sdkmath.LegacyDec, blocksPerYear uint64) Params {
+func NewParams(mintDenom string, inflationRateChange, inflationMax, inflationMin, goalBonded sdkmath.LegacyDec, blocksPerYear uint64, decayStartHeight uint64, decayRate sdkmath.LegacyDec) Params {
 	return Params{
 		MintDenom:           mintDenom,
 		InflationRateChange: inflationRateChange,
@@ -20,6 +20,8 @@ func NewParams(mintDenom string, inflationRateChange, inflationMax, inflationMin
 		InflationMin:        inflationMin,
 		GoalBonded:          goalBonded,
 		BlocksPerYear:       blocksPerYear,
+		DecayStartHeight:    decayStartHeight,
+		DecayRate:           decayRate,
 	}
 }
 
@@ -32,6 +34,8 @@ func DefaultParams() Params {
 		InflationMin:        sdkmath.LegacyNewDecWithPrec(7, 2),
 		GoalBonded:          sdkmath.LegacyNewDecWithPrec(67, 2),
 		BlocksPerYear:       uint64(60 * 60 * 8766 / 5), // assuming 5 second block times
+		DecayStartHeight:    1,                          // default to block 1
+		DecayRate:           sdkmath.LegacyZeroDec(),       // default to 0 (decay disabled)
 	}
 }
 
@@ -53,6 +57,12 @@ func (p Params) Validate() error {
 		return err
 	}
 	if err := validateBlocksPerYear(p.BlocksPerYear); err != nil {
+		return err
+	}
+	if err := validateDecayStartHeight(p.DecayStartHeight); err != nil {
+		return err
+	}
+	if err := validateDecayRate(p.DecayRate); err != nil {
 		return err
 	}
 	if p.InflationMax.LT(p.InflationMin) {
@@ -139,6 +149,40 @@ func validateBlocksPerYear(blocksPerYear uint64) error {
 
 	if blocksPerYear > math.MaxInt64 {
 		return fmt.Errorf("blocks per year too large: %d, maximum value is: %d", blocksPerYear, math.MaxInt64)
+	}
+
+	return nil
+}
+
+func validateDecayStartHeight(i any) error {
+	v, ok := i.(uint64)
+	if !ok {
+		return fmt.Errorf("invalid parameter type: %T", i)
+	}
+
+	if v == 0 {
+		return fmt.Errorf("decay start height must be positive (got: %d)", v)
+	}
+
+	return nil
+}
+
+func validateDecayRate(i any) error {
+	v, ok := i.(sdkmath.LegacyDec)
+	if !ok {
+		return fmt.Errorf("invalid parameter type: %T", i)
+	}
+
+	if v.IsNil() {
+		return fmt.Errorf("decay rate cannot be nil: %s", v)
+	}
+
+	if v.IsNegative() {
+		return fmt.Errorf("decay rate cannot be negative (must be between 0 and 1 inclusive, got: %s)", v)
+	}
+
+	if v.GT(sdkmath.LegacyOneDec()) {
+		return fmt.Errorf("decay rate too large (must be between 0 and 1 inclusive, got: %s)", v)
 	}
 
 	return nil

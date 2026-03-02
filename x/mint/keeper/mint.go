@@ -1,6 +1,10 @@
 package keeper
 
 import (
+	"context"
+
+	"cosmossdk.io/math"
+
 	"github.com/cosmos/cosmos-sdk/telemetry"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/mint/types"
@@ -77,4 +81,48 @@ func DefaultMintFn(ic types.InflationCalculationFn) MintFn {
 
 		return nil
 	}
+}
+
+// DeflationCalculationFn returns a custom InflationCalculationFn which applies continuous exponential decay to inflation.
+// Formula: inflation_rate = base_rate × (1 - monthly_decay)^months_elapsed
+// where months_elapsed = blocks_elapsed / blocks_per_month (continuous decimal value).
+// The base_rate is the inflation rate calculated using the default method.
+// Decay starts at DecayStartHeight and uses DecayRate from params.
+func DeflationCalculationFn(ctx context.Context, minter types.Minter, params types.Params, bondedRatio math.LegacyDec) math.LegacyDec {
+	// Calculate base inflation rate using default method
+	baseRate := types.DefaultInflationCalculationFn(ctx, minter, params, bondedRatio)
+
+	// Apply decay if enabled and we're past the start height
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	currentHeight := uint64(sdkCtx.BlockHeight())
+	finalInflation := baseRate
+
+	if params.DecayRate.IsPositive() && currentHeight >= params.DecayStartHeight {
+		monthsInYear := uint64(12)
+		blocksPerMonth := params.BlocksPerYear / monthsInYear
+		blocksElapsed := currentHeight - params.DecayStartHeight
+
+		if blocksPerMonth > 0 {
+			// Compute months elapsed as a decimal for continuous decay
+			monthsElapsed := math.LegacyNewDec(int64(blocksElapsed)).Quo(math.LegacyNewDec(int64(blocksPerMonth)))
+
+			// Power() only accepts uint64, so decompose the exponent:
+			// x^months = x^n × (x^(1/m))^r, where months = n + r/m
+			// Note: we compute (x^(1/m))^r, NOT (x^r)^(1/m), because x^r underflows
+			// to 0 for large r when x < 1, whereas x^(1/m) stays close to 1.
+			n := uint64(monthsElapsed.TruncateInt64())
+			r := blocksElapsed % blocksPerMonth
+
+			decayFactor := math.LegacyOneDec().Sub(params.DecayRate)
+			intPart := decayFactor.Power(n)
+			perBlockFactor, err := decayFactor.ApproxRoot(blocksPerMonth) // x^(1/m)
+			if err != nil {
+				// ApproxRoot should never error, but if it does, return 0 inflation: chain keeps running, no new minting.
+				return math.LegacyZeroDec()
+			}
+			fracPart := perBlockFactor.Power(r) // (x^(1/m))^r = x^(r/m)
+			finalInflation = baseRate.Mul(intPart.Mul(fracPart))
+		}
+	}
+	return finalInflation
 }
