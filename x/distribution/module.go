@@ -41,7 +41,9 @@ var (
 	_ module.HasServices         = AppModule{}
 
 	_ appmodule.AppModule       = AppModule{}
-	_ appmodule.HasBeginBlocker = AppModule{}
+	// so that distribution module beginBlocker can be omitted when it is removed from SetOrderBeginBlockers
+	// custom distribution of rewards is done on the tieredrewards module
+	// _ appmodule.HasBeginBlocker = AppModule{}  
 )
 
 // AppModuleBasic defines the basic application module used by the distribution module.
