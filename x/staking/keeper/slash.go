@@ -103,6 +103,10 @@ func (k Keeper) Slash(ctx context.Context, consAddr sdk.ConsAddress, infractionH
 		)
 
 	case infractionHeight < sdkCtx.BlockHeight():
+		logger.Info("scanning unbonding delegations & redelegations",
+			"infraction_height", infractionHeight,
+			"current_height", sdkCtx.BlockHeight(),
+		)
 		// Iterate through unbonding delegations from slashed validator
 		unbondingDelegations, err := k.GetUnbondingDelegationsFromValidator(ctx, operatorAddress)
 		if err != nil {
@@ -126,6 +130,8 @@ func (k Keeper) Slash(ctx context.Context, consAddr sdk.ConsAddress, infractionH
 		if err != nil {
 			return math.NewInt(0), err
 		}
+
+		logger.Info("found redelegations from src validator", "count", len(redelegations))
 
 		for _, redelegation := range redelegations {
 			amountSlashed, err := k.SlashRedelegation(ctx, validator, redelegation, infractionHeight, slashFactor)
@@ -302,6 +308,15 @@ func (k Keeper) SlashRedelegation(ctx context.Context, srcValidator types.Valida
 	totalSlashAmount = math.ZeroInt()
 	bondedBurnedAmount, notBondedBurnedAmount := math.ZeroInt(), math.ZeroInt()
 
+	logger := k.Logger(ctx)
+	logger.Info("SlashRedelegation called",
+		"delegator", redelegation.DelegatorAddress,
+		"src_validator", redelegation.ValidatorSrcAddress,
+		"dst_validator", redelegation.ValidatorDstAddress,
+		"infraction_height", infractionHeight,
+		"num_entries", len(redelegation.Entries),
+	)
+
 	valDstAddr, err := k.validatorAddressCodec.StringToBytes(redelegation.ValidatorDstAddress)
 	if err != nil {
 		return math.ZeroInt(), fmt.Errorf("SlashRedelegation: could not parse validator destination address: %w", err)
@@ -313,14 +328,26 @@ func (k Keeper) SlashRedelegation(ctx context.Context, srcValidator types.Valida
 	}
 
 	// perform slashing on all entries within the redelegation
-	for _, entry := range redelegation.Entries {
+	for i, entry := range redelegation.Entries {
+		logger.Info("SlashRedelegation: processing entry",
+			"entry_index", i,
+			"creation_height", entry.CreationHeight,
+			"infraction_height", infractionHeight,
+			"is_mature", entry.IsMature(now),
+			"on_hold", entry.OnHold(),
+			"initial_balance", entry.InitialBalance,
+			"shares_dst", entry.SharesDst,
+			"unbonding_id", entry.UnbondingId,
+		)
+
 		// If redelegation started before this height, stake didn't contribute to infraction
 		if entry.CreationHeight < infractionHeight {
+			logger.Info("SlashRedelegation: skipping entry — creation before infraction", "entry_index", i)
 			continue
 		}
 
 		if entry.IsMature(now) && !entry.OnHold() {
-			// Redelegation no longer eligible for slashing, skip it
+			logger.Info("SlashRedelegation: skipping entry — mature and not on hold", "entry_index", i)
 			continue
 		}
 
@@ -374,18 +401,23 @@ func (k Keeper) SlashRedelegation(ctx context.Context, srcValidator types.Valida
 		// Unbond from target validator
 		sharesToUnbond := slashFactor.Mul(entry.SharesDst)
 		if sharesToUnbond.IsZero() || slashAmount.IsZero() {
+			logger.Info("SlashRedelegation: skipping unbond — zero shares or zero slashAmount",
+				"entry_index", i, "sharesToUnbond", sharesToUnbond, "slashAmount", slashAmount)
 			continue
 		}
 
 		delegation, err := k.GetDelegation(ctx, delegatorAddress, valDstAddr)
 		if err != nil {
-			// If deleted, delegation has zero shares, and we can't unbond any more
+			logger.Info("SlashRedelegation: skipping — delegation not found", "entry_index", i, "err", err)
 			continue
 		}
 
 		if sharesToUnbond.GT(delegation.Shares) {
 			sharesToUnbond = delegation.Shares
 		}
+
+		logger.Info("SlashRedelegation: unbonding from dst validator",
+			"entry_index", i, "sharesToUnbond", sharesToUnbond, "slashAmount", slashAmount)
 
 		tokensToBurn, err := k.Unbond(ctx, delegatorAddress, valDstAddr, sharesToUnbond)
 		if err != nil {
